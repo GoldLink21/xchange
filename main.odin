@@ -3,42 +3,60 @@ package xchange
 import "core:fmt"
 import "core:os"
 import "core:strings"
+import "core:strconv"
 import "core:slice"
 
 // TODO: Macro expansion in macro body
 // TODO: Non explicit macro calls?
 
-// Configuration
+///////////////////
+// Configuration //
+///////////////////
 
+@(private)
 FILE_NAME :: "temp.txt"
 
 // The string that denotes the start of a macro call
-LEADER := "@"
-ERR_ON_REDEF :: true
-ERR_ON_UNDEF_NONEXISTANT :: false
-ENABLE_LOGGING :: true
+LEADER          :: #config(leader, "@")
+@(private)
+LEADER_LEADER   :: LEADER + LEADER
+FMT_UPPER       :: LEADER + "^" + LEADER
+FMT_LOWER       :: LEADER + "_" + LEADER
+// Throw an error when redefining a variable
+ERR_ON_REDEF                :: true
+// Throw an error when undef-ing a variable that doesn't exist
+ERR_ON_UNDEF_NONEXISTANT    :: false
+ENABLE_LOGGING              :: false
 
 // Reserved names that cannot be defined. 
+@(private)
 RESERVED_WORDS :: []string{ 
     "def", "include", "repeat", "if", "elseif", "endif",
-    "note", "noteStart", "noteEnd" 
+    "note", "noteStart", "noteEnd", "each"
 }
 
-// Structures
+////////////////
+// Structures //
+////////////////
+
+@(private)
 Macro :: struct {
     args: [dynamic]string,
     body: string
 }
 
+@(private)
 Group :: enum {
     If,
     Repeat,
 }
 
+@(private)
 GroupHeader :: struct {
     group: Group,
 }
 
+@(private)
 Reader :: struct {
     src: string,
     sb: ^strings.Builder,
@@ -46,8 +64,11 @@ Reader :: struct {
     groupStack: [dynamic]GroupHeader
 }
 
-// Utilities
+///////////////
+// Utilities //
+///////////////
 
+@(private)
 error :: proc(msg:string, args:..any) {
     fmt.printf("ERROR: ")
     fmt.printf(msg, ..args)
@@ -55,8 +76,17 @@ error :: proc(msg:string, args:..any) {
     os.exit(-1)
 }
 
+@(private)
+isAlNum :: proc(c:rune) -> bool {
+    return  (c >= 'A' && c <= 'Z') ||
+            (c >= 'a' && c <= 'z') ||
+            (c >= '0' && c <= '9') ||
+            (c == '_')
+}
+
 // Grabs what would be considered a "word" 
 //   from the input string and returns the rest alongside it
+@(private)
 chopWord :: proc(s:string) -> (word: string, rest: string) {
     s2 := strings.trim_left_space(s)
     stop := strings.index_any(s2, "\n\t \r(\000@")
@@ -67,9 +97,10 @@ chopWord :: proc(s:string) -> (word: string, rest: string) {
 // Grabs what would be considered a "word" 
 //   from the input string on the same line and 
 //   returns the rest alongside it
+@(private)
 chopWordSameLine :: proc(s:string) -> (word:string, rest:string) {
     s2 := strings.trim_left_space(s)
-    eol := strings.index(s2, "\n\r")
+    eol := strings.index(s2, "\n")
     // If there is no newline
     if eol == -1 {
         stop := strings.index_any(s2, "\t (\000@")
@@ -84,13 +115,20 @@ chopWordSameLine :: proc(s:string) -> (word:string, rest:string) {
 
 // Runs a function that takes a portion of a string and returs what's left after
 //  and runs it on a reader, manipulating the internal string tracker
+@(private)
 readerExtract :: proc(r:^Reader, extractor:proc(t:string) -> (ext:$T, rest:string)) -> T {
     ext, rest := extractor(r.src)
     r.src = rest
     return ext
 }
 
+@(private)
+readerApply :: proc(r:^Reader, application: proc(t:string) -> string) {
+    r.src = application(r.src)
+}
+
 // Adds text to the beginning of a reader
+@(private)
 readerPrepend :: proc(r:^Reader, text:string, addNL := false) {
     res, err := strings.concatenate({text, addNL ? "\n" : "", r.src[:]})
     if err != nil {
@@ -100,23 +138,25 @@ readerPrepend :: proc(r:^Reader, text:string, addNL := false) {
 }
 
 main :: proc() {
-    // fmt.printfln("%t", slice.any_of([]int{1,2,3}, 1))
-
-    // when true do return
     txt, ok := os.read_entire_file_from_filename(FILE_NAME)
     if !ok {
         fmt.printfln("Could not open file")
         return
     }
     ret := parseText(string(txt))
+    defer delete(ret)
+
+    os.write_entire_file("out.txt", transmute([]byte)(ret))
     fmt.printf("%s", ret)
 }
 
+@(private)
 readerTrimLeftNoNL :: proc(r:^Reader) {
     r.src = strings.trim_left(r.src, " \t")
 }
 
 // Logs a message about the status of a reader struct
+@(private)
 readerStatus :: proc(r:^Reader) {
     if !ENABLE_LOGGING do return
     ns1, a1 := strings.replace_all(strings.to_string(r.sb^), "\n", "$N")
@@ -133,19 +173,23 @@ readerStatus :: proc(r:^Reader) {
     fmt.printf("^^^^^^^^^^^^^^^^^\n")
 }
 
+@(private)
 isWhitespace :: proc(c: u8) -> bool {
     return c == ' ' || c == '\n' || c == '\t'
 }
+@(private)
 isWhitespaceRune :: proc(c: rune) -> bool {
     return c == ' ' || c == '\n' || c == '\t'
 }
 // Reads any leading whitespace in the internal buffer and ignores it
+@(private)
 skipWS :: proc(r:^Reader) {
     notWS := strings.index_proc(r.src, strings.is_separator)
     if notWS == -1 do return
     r.src = r.src[notWS:]
 }
 // Reads all bytes until the leader string
+@(private)
 readUntilString :: proc(r:^Reader, s: string) {
     idx := strings.index(r.src, s)
     if idx == -1 {
@@ -157,6 +201,7 @@ readUntilString :: proc(r:^Reader, s: string) {
     strings.write_string(r.sb, r.src[:idx])
     r.src = r.src[idx:]
 }
+@(private)
 readUntilCharset :: proc(r:^Reader, chars:string) -> string {
     idx := strings.index_any(r.src, chars)
     if idx == -1 {
@@ -169,15 +214,9 @@ readUntilCharset :: proc(r:^Reader, chars:string) -> string {
     return ret
 }
 
-isAlNum :: proc(c:rune) -> bool {
-    return  (c >= 'A' && c <= 'Z') ||
-            (c >= 'a' && c <= 'z') ||
-            (c >= '0' && c <= '9') ||
-            (c == '_')
-}
-
+// Read text to get parsed and output the allocated output text
 parseText :: proc(text: string, defs: map[string]Macro = nil) -> string {
-    sb, err := strings.builder_make_len(len(text))
+    sb, err := strings.builder_make()
     if err != nil do error("Could not create builder")
     r := Reader { 
         src = text[:], 
@@ -211,8 +250,10 @@ parseText :: proc(text: string, defs: map[string]Macro = nil) -> string {
     return strings.clone(strings.to_string(sb))
 }
 
+@(private)
 chopParens :: proc(s:string) -> (args:[dynamic]string, rest:string) {
     rest = strings.trim_left(s, " \t")
+    // rest = strings.trim_left_space(s)
     if len(rest) > 0 && rest[0] == '(' {
         args = make([dynamic]string)
         // Remove (
@@ -242,7 +283,8 @@ chopParens :: proc(s:string) -> (args:[dynamic]string, rest:string) {
     return nil, s
 }
 // Reads an argument list from a reader and checks for an arg count
-readerArgCount :: proc(r:^Reader, cmd:string, argc:..int = 1) -> (args:[dynamic]string) {
+@(private)
+readerArgCount :: proc(r:^Reader, cmd:string, argc:..int) -> (args:[dynamic]string) {
     args = readerExtract(r, chopParens)
     // TODO: Logging for multiple argc counts
     if args == nil {
@@ -254,6 +296,7 @@ readerArgCount :: proc(r:^Reader, cmd:string, argc:..int = 1) -> (args:[dynamic]
     return args
 }
 
+@(private)
 readUntilNL :: proc(r:^Reader) -> string {
     ret := readUntilCharset(r, "\n")
     // Remove \n
@@ -262,6 +305,7 @@ readUntilNL :: proc(r:^Reader) -> string {
 }
 
 // TODO
+@(private)
 resolveMacro :: proc(r:^Reader) {
     // Macro time!
     idx := strings.index_proc(r.src[:], isAlNum, false)
@@ -274,42 +318,17 @@ resolveMacro :: proc(r:^Reader) {
         switch cmd {
             case "def": {
                 // TODO: Rewrite this
-                // name := readerExtract(r, chopWord)
-                // if name == "" do error("No name given for %sdef", LEADER)
-                // args := readerExtract(r, chopParens)
-                // rest := readUntilNL(r)
-                // r.defs[name] = {
-                //     args = args,
-                //     body = rest
-                // }
-                // if ENABLE_LOGGING do fmt.printf("  Name: %s\n  Args: %s\n  Body: %s\n",
-                //     name, args, rest)
-                
-                eol := strings.trim_left_space(readUntilNL(r))
-                if len(eol) == 0 {
-                    error("Nothing after def macro")
-                }
-                // Check for def name
-                stop := strings.index_any(eol, "\n\t \r(")
-                if stop == -1 {
-                    error("Nothing after def name %s", eol)
-                }
-                defName := eol[:stop]
-                if defName in r.defs && ERR_ON_REDEF {
-                    error("Redefinition of macro '%s'", defName)
-                }
-                eol = strings.trim_space(eol[stop:])
-                if ENABLE_LOGGING do fmt.printf("  Name: %s\n", defName)
-
-                // Check for (arg,arg)
-                args, rest := chopParens(eol)
-                if ENABLE_LOGGING do fmt.printf("  Args: ")
-                if ENABLE_LOGGING do fmt.println(args)
-                r.defs[defName] = {
+                name := readerExtract(r, chopWordSameLine)
+                if name == "" do error("No name given for %sdef", LEADER)
+                args := readerExtract(r, chopParens)
+                readerTrimLeftNoNL(r)
+                rest := readUntilNL(r)
+                r.defs[name] = {
                     args = args,
                     body = rest
                 }
-                if ENABLE_LOGGING do fmt.printfln("  Body: `%s`", rest)
+                if ENABLE_LOGGING do fmt.printf("  Name: %s\n  Args: %s\n  Body: %s\n",
+                    name, args, rest)
             }
             case "undef": {
                 skipWS(r)
@@ -321,7 +340,7 @@ resolveMacro :: proc(r:^Reader) {
                 if toUndef in r.defs {
                     delete_key(&r.defs, toUndef)
                 } else {
-                    if ERR_ON_UNDEF_NONEXISTANT {
+                    when ERR_ON_UNDEF_NONEXISTANT {
                         error("Trying to undef '%s' but it is not defined", toUndef)
                     }
                 }
@@ -345,12 +364,35 @@ resolveMacro :: proc(r:^Reader) {
                 error("Reached %snoteEnd without %snoteStart", LEADER, LEADER)
             }
             case "repeat": {
-                repeatStop, err := strings.concatenate({LEADER, "repeatEnd"})
-                if err != nil do error("Could not concat for repeatEnd")
-                defer delete(repeatStop)
+                args := readerExtract(r, chopParens)
+                if len(args) != 2 {
+                    error("%srepeat() requires two arguments", LEADER)
+                }
+                num1,   num2   : int
+                num1OK, num2OK : bool
 
-                //unimplemented("@repeat(arg, <range>)")
-                error("Unimplimented: ")
+                num1, num1OK = strconv.parse_int(args[0])
+                if !num1OK do error("First arg for %srepeat() was not a number", LEADER)
+
+                num2, num2OK = strconv.parse_int(args[1])
+                if !num2OK do error("Second arg for %srepeat() was not a number", LEADER)
+
+                leadStop, err := strings.concatenate({LEADER, "endRepeat"})
+                if err != nil do error("Could not concat for endRepeat")
+                defer delete(leadStop)
+
+                lsIdx := strings.index(r.src, leadStop)
+                if lsIdx == -1 do error("No %sendRepeat for a started %srepeat", LEADER, LEADER)
+                // Content to go through
+                body := r.src[:lsIdx]
+                for i := num1; i != num2; i += (num1 < num2) ? 1 : -1 {
+                    repl, didRepl := strings.replace_all(body, LEADER_LEADER, fmt.tprintf("%d", i))
+                    defer if didRepl do delete(repl)
+
+                    strings.write_string(r.sb, repl)
+                }
+                // Skip 
+                r.src = r.src[lsIdx + len(leadStop):]
             }
             case "calc", "eval": {
                 args := readerArgCount(r, "calc", 1)
@@ -373,6 +415,32 @@ resolveMacro :: proc(r:^Reader) {
 
                 readerPrepend(r, string(newFile), true)
                 // unimplemented("@include")
+            }
+            case "each": {
+                args := readerExtract(r, chopParens)
+                if len(args) == 0 {
+                    error("%seach() requires more than one argument", LEADER)
+                }
+
+                leadStop, err := strings.concatenate({LEADER, "endEach"})
+                if err != nil do error("Could not concat for noteStop")
+                defer delete(leadStop)
+
+                lsIdx := strings.index(r.src, leadStop)
+                if lsIdx == -1 do error("No %seachEnd for a started %seach", LEADER, LEADER)
+                // Content to go through
+                body := r.src[:lsIdx]
+                for arg in args {
+                    repl, didRepl := strings.replace_all(body, LEADER_LEADER, arg)
+                    defer if didRepl do delete(repl)
+
+                    strings.write_string(r.sb, repl)
+                }
+                // Skip 
+                r.src = r.src[lsIdx + len(leadStop):]
+            }
+            case "endEach": {
+                unimplemented("@endif")
             }
             case "if": {
                 unimplemented("@if")
