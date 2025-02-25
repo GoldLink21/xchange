@@ -21,7 +21,7 @@ ERR_ON_UNDEF_NONEXISTANT    :: false
 
 // Simple expanded logging
 @private
-ENABLE_LOGGING              :: true
+ENABLE_LOGGING              :: false
 
 ///////////////
 // Utilities //
