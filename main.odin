@@ -5,6 +5,7 @@ import "core:os"
 import "core:strings"
 import "core:strconv"
 import "core:slice"
+import "core:path/filepath"
 
 // TODO: Macro expansion in macro body
 // TODO: Non explicit macro calls?
@@ -13,64 +14,34 @@ import "core:slice"
 // Configuration //
 ///////////////////
 
-@(private)
-FILE_NAME :: "temp.txt"
-
-// The string that denotes the start of a macro call
-LEADER          :: #config(leader, "@")
-@(private)
-LEADER_LEADER   :: LEADER + LEADER
-FMT_UPPER       :: LEADER + "^" + LEADER
-FMT_LOWER       :: LEADER + "_" + LEADER
 // Throw an error when redefining a variable
 ERR_ON_REDEF                :: true
 // Throw an error when undef-ing a variable that doesn't exist
 ERR_ON_UNDEF_NONEXISTANT    :: false
-ENABLE_LOGGING              :: false
 
-// Reserved names that cannot be defined. 
-@(private)
-RESERVED_WORDS :: []string{ 
-    "def", "include", "repeat", "if", "elseif", "endif",
-    "note", "noteStart", "noteEnd", "each"
-}
-
-////////////////
-// Structures //
-////////////////
-
-@(private)
-Macro :: struct {
-    args: [dynamic]string,
-    body: string
-}
-
-@(private)
-Group :: enum {
-    If,
-    Repeat,
-}
-
-@(private)
-GroupHeader :: struct {
-    group: Group,
-}
-
-@(private)
-Reader :: struct {
-    src: string,
-    sb: ^strings.Builder,
-    defs: map[string]Macro,
-    groupStack: [dynamic]GroupHeader
-}
+// Simple expanded logging
+@private
+ENABLE_LOGGING              :: true
 
 ///////////////
 // Utilities //
 ///////////////
 
 @(private)
-error :: proc(msg:string, args:..any) {
-    fmt.printf("ERROR: ")
+error :: proc(msg:string, args:..any, loc:= #caller_location) {
+    fmt.printf("ERROR ")
+    fmt.print(loc)
+    fmt.printf(": ")
+    fmt.printf(msg, ..args)
+    fmt.println()
+    os.exit(-1)
+}
+
+@(private)
+errorPos :: proc(pos: TokenPos, msg:string, args:..any, loc:= #caller_location) {
+    fmt.printf("ERROR ")
+    printTokLoc(pos)
+    fmt.printf(": ")
     fmt.printf(msg, ..args)
     fmt.println()
     os.exit(-1)
@@ -86,6 +57,7 @@ isAlNum :: proc(c:rune) -> bool {
 
 // Grabs what would be considered a "word" 
 //   from the input string and returns the rest alongside it
+// @unused
 @(private)
 chopWord :: proc(s:string) -> (word: string, rest: string) {
     s2 := strings.trim_left_space(s)
@@ -97,13 +69,18 @@ chopWord :: proc(s:string) -> (word: string, rest: string) {
 // Grabs what would be considered a "word" 
 //   from the input string on the same line and 
 //   returns the rest alongside it
+// @unused
 @(private)
-chopWordSameLine :: proc(s:string) -> (word:string, rest:string) {
+chopWordSameLine :: proc(s:string, $SAME_LINE: bool) -> (word:string, rest:string) {
     s2 := strings.trim_left_space(s)
     eol := strings.index(s2, "\n")
     // If there is no newline
     if eol == -1 {
-        stop := strings.index_any(s2, "\t (\000@")
+        when SAME_LINE {
+            stop := strings.index_any(s2, "\t (\000@")
+        } else {
+            stop := strings.index_any(s2, "\t (\000@\n")
+        }
         if stop == -1 do return "", s2
         return s2[:stop], s2[stop:]
     }
@@ -113,64 +90,72 @@ chopWordSameLine :: proc(s:string) -> (word:string, rest:string) {
 
 }
 
-// Runs a function that takes a portion of a string and returs what's left after
-//  and runs it on a reader, manipulating the internal string tracker
-@(private)
-readerExtract :: proc(r:^Reader, extractor:proc(t:string) -> (ext:$T, rest:string)) -> T {
-    ext, rest := extractor(r.src)
-    r.src = rest
-    return ext
+// Parse text and resolve it as it is. filePath arg is used for any @include macros
+parseText :: proc(text: string, filePath:=".", args:..string) -> (ret:string, ok: bool) {
+    dir := filepath.dir(filePath)
+    defer delete(dir)
+    os.change_directory(dir)
+    tokens := lexText(string(text), filePath)
+    out, ctx := resolveTokens(tokens, args)
+    defer context_destroy(&ctx)
+    return out, true
 }
 
-@(private)
-readerApply :: proc(r:^Reader, application: proc(t:string) -> string) {
-    r.src = application(r.src)
-}
-
-// Adds text to the beginning of a reader
-@(private)
-readerPrepend :: proc(r:^Reader, text:string, addNL := false) {
-    res, err := strings.concatenate({text, addNL ? "\n" : "", r.src[:]})
-    if err != nil {
-        error("Could not concatenate the new file with the existing")
+parseFile :: proc(fileName: string, args:..string) -> (ret: string = "", ok: bool) {
+    txt, fileOk := os.read_entire_file_from_filename(fileName)
+    if !fileOk {
+        return "", false
     }
-    r.src = res
+    defer delete(txt)
+    // Move into the directory of the file for referencing files in it
+    dir := filepath.dir(fileName)
+    defer delete(dir)
+    os.change_directory(dir)
+    tokens := lexText(string(txt), fileName)
+    out, ctx := resolveTokens(tokens, args)
+    defer context_destroy(&ctx)
+    return out, true
 }
-
+// Block out main when not exe
+when ODIN_BUILD_MODE == .Executable {
 main :: proc() {
-    txt, ok := os.read_entire_file_from_filename(FILE_NAME)
-    if !ok {
+    if len(os.args) == 1 do error("Pass in the file to parse")
+    fileName := os.args[1]
+    
+    if fileName == "help" || fileName == "?" {
+        printHelp()
+        return
+    }
+
+    txt, fileOk := os.read_entire_file_from_filename(fileName)
+    if !fileOk {
         fmt.printfln("Could not open file")
         return
     }
-    ret := parseText(string(txt))
-    defer delete(ret)
+    defer delete(txt)
+    // Move into the directory of the file for referencing files in it
+    dir := filepath.dir(os.args[1])
+    defer delete(dir)
+    os.change_directory(dir)
 
-    os.write_entire_file("out.txt", transmute([]byte)(ret))
-    fmt.printf("%s", ret)
-}
-
-@(private)
-readerTrimLeftNoNL :: proc(r:^Reader) {
-    r.src = strings.trim_left(r.src, " \t")
-}
-
-// Logs a message about the status of a reader struct
-@(private)
-readerStatus :: proc(r:^Reader) {
-    if !ENABLE_LOGGING do return
-    ns1, a1 := strings.replace_all(strings.to_string(r.sb^), "\n", "$N")
-    defer if a1 do delete(ns1)
-    ns2, a2 := strings.replace_all(r.src, "\n", "$N")
-    defer if a2 do delete(ns2)
-    fmt.printf("vvvvvvvvvvvvvvvvv\n")
-    fmt.printf("| defs: \n")
-    for k,v in r.defs {
-        fmt.printf("|   '%s %s' => '%s'\n", k, v.args, v.body)
+    tokens := lexText(string(txt), fileName)
+    when ENABLE_LOGGING {
+        fmt.println("\nvvvvvvvvTokensvvvvvvvvvvv")
+        printTokens(tokens)
+        fmt.println("\n--------Resolve----------")
     }
-    fmt.printf("| Already Read:\n| - `%s`\n", ns1)
-    fmt.printf("| To Read:\n| - `%s`\n", ns2)
-    fmt.printf("^^^^^^^^^^^^^^^^^\n")
+    out, ctx := resolveTokens(tokens, os.args[2:])
+    defer context_destroy(&ctx)
+    when ENABLE_LOGGING {
+        fmt.println("\n--------Output-----------")
+    }
+    // fmt.print("<")
+    fmt.print(out)
+    // fmt.print(">")
+    when ENABLE_LOGGING {
+        fmt.println("\n$$$$$$$$$End$$$$$$$$$$$$$")
+    }
+}
 }
 
 @(private)
@@ -178,76 +163,12 @@ isWhitespace :: proc(c: u8) -> bool {
     return c == ' ' || c == '\n' || c == '\t'
 }
 @(private)
+isWhitespaceNoNL :: proc(c:u8) -> bool {
+    return c == ' ' || c == '\t'
+}
+@(private)
 isWhitespaceRune :: proc(c: rune) -> bool {
     return c == ' ' || c == '\n' || c == '\t'
-}
-// Reads any leading whitespace in the internal buffer and ignores it
-@(private)
-skipWS :: proc(r:^Reader) {
-    notWS := strings.index_proc(r.src, strings.is_separator)
-    if notWS == -1 do return
-    r.src = r.src[notWS:]
-}
-// Reads all bytes until the leader string
-@(private)
-readUntilString :: proc(r:^Reader, s: string) {
-    idx := strings.index(r.src, s)
-    if idx == -1 {
-        strings.write_string(r.sb, r.src)
-        r.src = ""
-        return
-    }
-
-    strings.write_string(r.sb, r.src[:idx])
-    r.src = r.src[idx:]
-}
-@(private)
-readUntilCharset :: proc(r:^Reader, chars:string) -> string {
-    idx := strings.index_any(r.src, chars)
-    if idx == -1 {
-        ret := r.src[:]
-        r.src = ""
-        return ret
-    }
-    ret := r.src[:idx]
-    r.src = r.src[idx:]
-    return ret
-}
-
-// Read text to get parsed and output the allocated output text
-parseText :: proc(text: string, defs: map[string]Macro = nil) -> string {
-    sb, err := strings.builder_make()
-    if err != nil do error("Could not create builder")
-    r := Reader { 
-        src = text[:], 
-        sb = &sb, 
-        defs = make(map[string]Macro),
-        groupStack = make([dynamic]GroupHeader)
-    }
-    // Clone the defs context to allow macro expansion inside a string
-    if defs != nil {
-        for k,v in defs {
-            r.defs[k] = Macro{
-                body = v.body,
-                args = make([dynamic]string)
-            }
-            nd := r.defs[k].args
-            for a in v.args {
-                append(&nd, a)
-            }
-        }
-    }
-
-    for r.src != "" {
-        readUntilString(&r, LEADER)
-        if strings.has_prefix(r.src, LEADER) {
-            // Remove Leader
-            r.src = r.src[len(LEADER):]
-            resolveMacro(&r)
-        }
-        readerStatus(&r)
-    }
-    return strings.clone(strings.to_string(sb))
 }
 
 @(private)
@@ -282,213 +203,7 @@ chopParens :: proc(s:string) -> (args:[dynamic]string, rest:string) {
     }
     return nil, s
 }
-// Reads an argument list from a reader and checks for an arg count
-@(private)
-readerArgCount :: proc(r:^Reader, cmd:string, argc:..int) -> (args:[dynamic]string) {
-    args = readerExtract(r, chopParens)
-    // TODO: Logging for multiple argc counts
-    if args == nil {
-        error("Command %s was called without args or (). Expected %d arguments", cmd, argc[0])
-    } 
-    if !slice.any_of(argc, len(args)) {
-        error("Command %s was called with the wrong number of arguments. %d were expected", cmd, argc[0])
-    }
-    return args
+
+printHelp :: proc() {
+    fmt.printfln("There is no help for you")
 }
-
-@(private)
-readUntilNL :: proc(r:^Reader) -> string {
-    ret := readUntilCharset(r, "\n")
-    // Remove \n
-    if len(r.src) > 0 do r.src = r.src[1:]
-    return ret
-}
-
-// TODO
-@(private)
-resolveMacro :: proc(r:^Reader) {
-    // Macro time!
-    idx := strings.index_proc(r.src[:], isAlNum, false)
-    // if idx == -1 do error("Nothing after macro initializer\n")
-    if idx != 0 && idx != -1 {
-        cmd := readerExtract(r, chopWord)
-        // cmd := r.src[:idx]
-        if ENABLE_LOGGING do fmt.printf("CMD: `%s`\n", cmd)
-        // r.src = r.src[idx:]
-        switch cmd {
-            case "def": {
-                // TODO: Rewrite this
-                name := readerExtract(r, chopWordSameLine)
-                if name == "" do error("No name given for %sdef", LEADER)
-                args := readerExtract(r, chopParens)
-                readerTrimLeftNoNL(r)
-                rest := readUntilNL(r)
-                r.defs[name] = {
-                    args = args,
-                    body = rest
-                }
-                if ENABLE_LOGGING do fmt.printf("  Name: %s\n  Args: %s\n  Body: %s\n",
-                    name, args, rest)
-            }
-            case "undef": {
-                skipWS(r)
-                readerStatus(r)
-                toUndef := readerExtract(r, chopWord)
-                if strings.trim_space(toUndef) == "" {
-                    error("Trying to undef nothing")
-                }
-                if toUndef in r.defs {
-                    delete_key(&r.defs, toUndef)
-                } else {
-                    when ERR_ON_UNDEF_NONEXISTANT {
-                        error("Trying to undef '%s' but it is not defined", toUndef)
-                    }
-                }
-                if ENABLE_LOGGING do fmt.printf("Undef '%s'\n", toUndef)
-            }
-            case "note": {
-                // Ignore everything else on the line
-                readUntilNL(r)
-            }
-            case "noteStart": {
-                leadStop, err := strings.concatenate({LEADER, "noteStop"})
-                if err != nil do error("Could not concat for noteStop")
-                defer delete(leadStop)
-                lsIdx := strings.index(r.src, leadStop)
-                if lsIdx == -1 do error("No %snoteStop for a started %snoteStart", LEADER, LEADER)
-                r.src = r.src[lsIdx + len(leadStop):]
-                // Eat trailing newlines
-                if len(r.src) > 0 && r.src[0] == '\n' do r.src = r.src[1:]
-            }
-            case "noteStop": {
-                error("Reached %snoteEnd without %snoteStart", LEADER, LEADER)
-            }
-            case "repeat": {
-                args := readerExtract(r, chopParens)
-                if len(args) != 2 {
-                    error("%srepeat() requires two arguments", LEADER)
-                }
-                num1,   num2   : int
-                num1OK, num2OK : bool
-
-                num1, num1OK = strconv.parse_int(args[0])
-                if !num1OK do error("First arg for %srepeat() was not a number", LEADER)
-
-                num2, num2OK = strconv.parse_int(args[1])
-                if !num2OK do error("Second arg for %srepeat() was not a number", LEADER)
-
-                leadStop, err := strings.concatenate({LEADER, "endRepeat"})
-                if err != nil do error("Could not concat for endRepeat")
-                defer delete(leadStop)
-
-                lsIdx := strings.index(r.src, leadStop)
-                if lsIdx == -1 do error("No %sendRepeat for a started %srepeat", LEADER, LEADER)
-                // Content to go through
-                body := r.src[:lsIdx]
-                for i := num1; i != num2; i += (num1 < num2) ? 1 : -1 {
-                    repl, didRepl := strings.replace_all(body, LEADER_LEADER, fmt.tprintf("%d", i))
-                    defer if didRepl do delete(repl)
-
-                    strings.write_string(r.sb, repl)
-                }
-                // Skip 
-                r.src = r.src[lsIdx + len(leadStop):]
-            }
-            case "calc", "eval": {
-                args := readerArgCount(r, "calc", 1)
-                defer delete(args)
-                // TODO: Could use the lua library?
-
-                error("TODO calc on %s", args[0])
-                // Need to resolve arguments first
-            }
-            case "include": {
-                args := readerExtract(r, chopParens)
-                defer delete(args)
-                if(len(args) != 1) {
-                    error("Invalid argument count for %sinclude. Expected 1 arg", LEADER)
-                }
-                newFile, readOK := os.read_entire_file_from_filename(args[0])
-                if !readOK {
-                    error("Could not include file '%s'", args[0])
-                }  
-
-                readerPrepend(r, string(newFile), true)
-                // unimplemented("@include")
-            }
-            case "each": {
-                args := readerExtract(r, chopParens)
-                if len(args) == 0 {
-                    error("%seach() requires more than one argument", LEADER)
-                }
-
-                leadStop, err := strings.concatenate({LEADER, "endEach"})
-                if err != nil do error("Could not concat for noteStop")
-                defer delete(leadStop)
-
-                lsIdx := strings.index(r.src, leadStop)
-                if lsIdx == -1 do error("No %seachEnd for a started %seach", LEADER, LEADER)
-                // Content to go through
-                body := r.src[:lsIdx]
-                for arg in args {
-                    repl, didRepl := strings.replace_all(body, LEADER_LEADER, arg)
-                    defer if didRepl do delete(repl)
-
-                    strings.write_string(r.sb, repl)
-                }
-                // Skip 
-                r.src = r.src[lsIdx + len(leadStop):]
-            }
-            case "endEach": {
-                unimplemented("@endif")
-            }
-            case "if": {
-                unimplemented("@if")
-            }
-            case "elseif": {
-                unimplemented("@elseif")
-            }
-            case "endif": {
-                unimplemented("@endif")
-            }
-            case: {
-                if cmd not_in r.defs {
-                    error("Call to undefined macro '%s%s'", LEADER, cmd)
-                }
-                args := readerExtract(r, chopParens)
-                macro := r.defs[cmd]
-                if len(macro.args) != len(args) {
-                    error("Call to %s has invalid arg count. Expected %d, but got %d", cmd, len(macro.args), len(args))
-                }
-                // TODO: Does not detect macro at end of string
-
-                // If no args and the next char is the LEADER, skip it.
-                //   This allows in place macro calls
-                if args == nil {
-                    if strings.index(r.src, LEADER) == 0 {
-                        r.src = r.src[1:]
-                    }
-                    strings.write_string(r.sb, r.defs[cmd].body)
-                } else {
-                    newText, hasAlloc := macro.body[:], false
-                    defer if hasAlloc do delete(newText)
-                    // TODO: Better find and replace method
-                    for arg,i in args {
-                        if ENABLE_LOGGING do fmt.printf("  Replacing '%s' with '%s'\n",macro.args[i], arg)
-                        newText, hasAlloc = strings.replace_all(newText, macro.args[i], arg)
-                    }
-                    // TODO: Decide which approach is better
-                    readerPrepend(r, newText)
-                    // strings.write_string(r.sb, parseText(newText, r.defs))
-                    delete(args)
-                }
-
-            }
-        }
-    } else {
-        // Not a macro? Keep the leader
-        when ENABLE_LOGGING do fmt.printfln("Not a macro")
-        if len(r.src) > 0 do strings.write_string(r.sb, LEADER)
-    }
-}
-

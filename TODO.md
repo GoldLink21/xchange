@@ -1,0 +1,10 @@
+- [ ] Large form macros (@define vs @def)
+    - Allows defining macros with NLs in it
+- [ ] Allow newline skipping in macro args
+- [X] Allow spaces in macro args. Resolve them as listed
+- [ ] Fix macro expansion in macro defs
+- [ ] Instead of erroring out, return false in parseText()
+- [ ] Maybe allow defining macro names using macros
+    - Could use @def (macro name) (args, args, ...) body
+    - The name would get checked that it has no \r\n or whitespace
+    - Or, allow it and allow @(macro name)(args, args, ...) calls

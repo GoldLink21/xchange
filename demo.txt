@@ -1,0 +1,67 @@
+This is a demo file to get processed through xchange
+
+Whitespace is important in the processing of the file 
+and will be retained.
+
+All macros start with a leader, defaults to \@, which will be used 
+for example through this document
+
+You can escape a starting leader character with \ as such: \ @~ \@
+
+ABC \@~ DEF = ABCDEF
+- \@~ removes whitespace before and after it 
+- Useful for resolving macros in text
+
+You can define macros using \@def MacroName Macro body elements
+- It will define up to the next newline
+- Names are case sensitive, \@a and \@A are different macros
+- Macros can also be defined with arguments
+  - \@def macro(argZero, argOne, argTwo) argZero + argOne - argTwo
+  - Args are replaced literally inside the body of the macro to allow 
+    quickly understanding at a glance what a macro does
+- The newline at the end of a macro definition is not included 
+  in the final text
+- TODO: Currently macros will not get expanded in the body of a macro
+
+
+TODO: If you want to define macros with an extended body, use \@define
+- The body of the macro will be until an \@end
+
+Once macros are defined, you can call them with \@MacroName(args,args)
+
+If you want to remove a macro if it is defined, you can use @undef MacroName
+
+To remove text from the final output, use \@note to remove until end of line
+- If you want to remove a block of text, use \@notes, which will remove until
+  the next \@end (This does not consider other blocks that use \@end) 
+\@note ABCDEF 
+   would not get into the final file, as show below
+@note ABCDEF
+
+You can include any file using \@include(fileName, arg0, arg1, ...)
+- The file will get parsed through xchange and have macros expanded
+- It will pass in arguments as macros \@arg0, \@arg1, ...
+- You can also access the args using \@arg(number)
+- Combining \@ifdef(arg0) can be powerful to allow checking arguments
+
+Repetition
+- Can handle repeated text in two ways. \@each and \@repeat
+
+\@each(arg0, arg1, ...) will iterate over each argument, using \@0 to count
+  for the element each iteration. Can also use \@i to get the 0 based index
+  of the element. This is in place until \@end
+```
+\@each(aA, bB, cC)
+\@0 = \@upper(\@0) and \@lower(\@0)
+\@end
+= 
+@each(aA, bB, cC)
+@0 = @upper(@0) and @lower(@0)
+@end
+```
+
+Can also do \@eachArg to iterate each argument passed into the file
+
+\@repeat(from, to) allows repeating with a numeric input range.
+- Useful with this is the \@pad(value, numLeading, padWith='0')
+- ` \@pad(5, 4, g) = @pad(5, 4, g) `
