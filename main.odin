@@ -3,8 +3,6 @@ package xchange
 import "core:fmt"
 import "core:os"
 import "core:strings"
-import "core:strconv"
-import "core:slice"
 import "core:path/filepath"
 
 // TODO: Macro expansion in macro body

@@ -55,9 +55,9 @@ Token :: struct {
 
 // Convert text into tokens
 @private
-lexText :: proc(text:string, fileName: string) -> [dynamic]Token {
+lexText :: proc(inputText:string, fileName: string) -> [dynamic]Token {
     tokens := make([dynamic]Token)
-    text   := text[:]
+    text   := inputText[:]
     // Characters that split elements up
     SPLIT :: "(),\r"
     index, line, column := 0, 1, 1

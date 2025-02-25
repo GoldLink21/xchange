@@ -81,7 +81,7 @@ updateFrameTarget :: proc(tc: ^TokenContext, frameIndex: int, source: string) {
     // Resolve @0
     newIndex := fmt.tprintf("%d", frameIndex - 1)
     if newIndex in frame.macros {
-        k, v := delete_key(&frame.macros, newIndex)
+        _, v := delete_key(&frame.macros, newIndex)
         delete(v.body)
         destroy_args(v.args)
     }
@@ -94,7 +94,7 @@ updateFrameTarget :: proc(tc: ^TokenContext, frameIndex: int, source: string) {
 @private
 tokDropFrame :: proc(tc: ^TokenContext) {
     frame := &tc.stackFrame[len(tc.stackFrame) - 1]
-    for k, v in frame.macros {
+    for _, v in frame.macros {
         destroy_args(v.args)
         delete(v.body)
     }
@@ -381,7 +381,7 @@ context_destroy :: proc(tc:^TokenContext) {
     strings.builder_destroy(&tc.out)
     delete(tc.tokens)
     for &frame in tc.stackFrame {
-        for k, v in frame.macros {
+        for _, v in frame.macros {
             for arg in v.args {
                 delete(arg)
             }
@@ -677,7 +677,7 @@ resolveTokens :: proc(tokens: [dynamic]Token, inArgs: []string = nil) -> (string
                 }
                 defer destroy_args(args)
                 tokSkipIfWSNL(&ctx)
-                macro, exists := tokGetMacro(&ctx, args[0])
+                _, exists := tokGetMacro(&ctx, args[0])
                 if exists {
                     // Create a new frame and continue
                     tokNewFrame(&ctx, nil)
@@ -802,8 +802,8 @@ resolveMacroCall :: proc(tc:^TokenContext) -> string {
             toAdd, newCtx := resolveTokens(newTokens, args[1:])
             assert(len(newCtx.stackFrame) == 1, "Included context should only have one stack frame")
 
-            for name, macro in newCtx.stackFrame[0].macros {
-                tc.stackFrame[0].macros[name] = macro
+            for name, innerMacro in newCtx.stackFrame[0].macros {
+                tc.stackFrame[0].macros[name] = innerMacro
             }
             strings.builder_destroy(&newCtx.out)
             delete(newCtx.stackFrame)
@@ -828,7 +828,7 @@ resolveMacroCall :: proc(tc:^TokenContext) -> string {
             noCR, didAlloc := strings.replace_all(transmute(string)(fileText), "\r", "")
             defer if didAlloc do delete(noCR)
             tokSkipIfWSNL(tc)
-            return strings.clone(transmute(string)(noCR))
+            return strings.clone(noCR)
         }
         case FMT_NEWLINE: {
             // We make sure to allocate everything leaving this function
